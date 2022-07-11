@@ -9,6 +9,11 @@ package mr
 import "os"
 import "strconv"
 
+const (
+	MAP    = iota
+	REDUCE = iota
+)
+
 //
 // example to show how to declare the arguments
 // and reply for an RPC.
@@ -23,7 +28,22 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
+type RequestJobArgs struct {
+}
 
+type RequestJobReply struct {
+	JobType    int
+	MapJob_    MapJob
+	ReduceJob_ ReduceJob
+}
+
+type MarkDoneArgs struct {
+	JobType int
+	Index   int
+}
+
+type MarkDoneReply struct {
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.
