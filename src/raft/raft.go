@@ -58,6 +58,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	CommandTerm  int
 }
 
 type LogEntry struct {
@@ -686,18 +687,21 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		for !rf.killed() {
 			time.Sleep(10 * time.Millisecond)
 			rf.mu.Lock()
+			currentLastApplied := rf.lastApplied
+			rf.lastApplied = rf.commitIndex
+			rf.mu.Unlock()
 
-			for rf.lastApplied < rf.commitIndex {
-				rf.lastApplied++
-				DPrintf("rf[%v] len(rf.Log) = %v, rf.lastApplied = %v, rf.commitIndex = %v", rf.id, len(rf.Log), rf.lastApplied, rf.commitIndex)
+			for currentLastApplied < rf.lastApplied {
+				currentLastApplied++
+				DPrintf("rf[%v]: Applied %+v len(rf.Log) = %v, rf.lastApplied = %v, rf.commitIndex = %v", rf.id, rf.Log[currentLastApplied], len(rf.Log), rf.lastApplied, rf.commitIndex)
 				applyCh <- ApplyMsg{
 					CommandValid: true,
-					Command:      rf.Log[rf.lastApplied].Command,
-					CommandIndex: rf.lastApplied,
+					Command:      rf.Log[currentLastApplied].Command,
+					CommandIndex: rf.Log[currentLastApplied].Index,
+					CommandTerm:  rf.Log[currentLastApplied].Term,
 				}
 			}
 
-			rf.mu.Unlock()
 		}
 	}()
 

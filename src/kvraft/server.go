@@ -3,26 +3,19 @@ package kvraft
 import (
 	"../labgob"
 	"../labrpc"
-	"log"
 	"../raft"
 	"sync"
 	"sync/atomic"
+	"time"
 )
-
-const Debug = 0
-
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug > 0 {
-		log.Printf(format, a...)
-	}
-	return
-}
-
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Key   string
+	Value string
+	Op    Operation // "Put" or "Append"
 }
 
 type KVServer struct {
@@ -35,15 +28,88 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	store     map[string]string
+	storeLock sync.Mutex
+	chMap     map[int]int
+	chMapLock sync.Mutex
 }
 
-
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	defer DPrintf("kvserver[%+v]: Finished KVServer.Get, args=%+v, reply=%+v", kv.me, args, reply)
+
+	index, term, success := kv.rf.Start(Op{
+		Key:   args.Key,
+		Value: "",
+		Op:    GET,
+	})
+
+	DPrintf("kvserver[%+v]: Started KVServer.Get, index=%+v, term=%+v, success=%+v, args=%+v", kv.me, index, term, success, args)
+
+	if success {
+		for {
+			time.Sleep(10 * time.Millisecond)
+
+			kv.chMapLock.Lock()
+			val, ok := kv.chMap[index]
+			DPrintf("kvserver[%+v]: kv.chMap[%+v]= %+v,%+v", kv.me, index, val, ok)
+			kv.chMapLock.Unlock()
+			if ok {
+				DPrintf("kvserver[%+v]: in OK", kv.me)
+				if val == term {
+					kv.storeLock.Lock()
+					reply.Value, ok = kv.store[args.Key]
+					kv.storeLock.Unlock()
+
+					DPrintf("kvserver[%+v]: after storeLock", kv.me)
+					if ok {
+						reply.Err = OK
+					} else {
+						reply.Err = ErrNoKey
+					}
+				} else {
+					reply.Err = ErrNotCommitted
+				}
+
+				DPrintf("kvserver[%+v]: broke", kv.me)
+				break
+			}
+		}
+	} else {
+		reply.Err = ErrWrongLeader
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	defer DPrintf("kvserver[%+v]: Finished KVServer.PutAppend, args=%+v, reply=%+v", kv.me, args, reply)
+
+	index, term, success := kv.rf.Start(Op{
+		Key:   args.Key,
+		Value: args.Value,
+		Op:    args.Op,
+	})
+
+	DPrintf("kvserver[%+v]: Started KVServer.PutAppend, index=%+v, term=%+v, success=%+v, args=%+v", kv.me, index, term, success, args)
+
+	if success {
+		for {
+			time.Sleep(10 * time.Millisecond)
+
+			kv.chMapLock.Lock()
+			val, ok := kv.chMap[index]
+			kv.chMapLock.Unlock()
+			if ok {
+				if val == term {
+					reply.Err = OK
+				} else {
+					reply.Err = ErrNotCommitted
+				}
+
+				break
+			}
+		}
+	} else {
+		reply.Err = ErrWrongLeader
+	}
 }
 
 //
@@ -96,6 +162,36 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.store = make(map[string]string)
+	kv.chMap = make(map[int]int)
+
+	go func() {
+		for msg := range kv.applyCh {
+			DPrintf("kvserver[%+v]: Applied Message Index:%+v,%+v", kv.me, msg.CommandIndex, msg.CommandTerm)
+			if msg.CommandValid {
+				kv.chMapLock.Lock()
+				kv.chMap[msg.CommandIndex] = msg.CommandTerm
+				kv.chMapLock.Unlock()
+
+				op := (msg.Command).(Op)
+
+				if op.Op == PUT || op.Op == APPEND {
+					kv.storeLock.Lock()
+					if op.Op == PUT {
+						kv.store[op.Key] = op.Value
+					} else {
+						val, ok := kv.store[op.Key]
+						if ok {
+							kv.store[op.Key] = val + op.Value
+						} else {
+							kv.store[op.Key] = op.Value
+						}
+					}
+					kv.storeLock.Unlock()
+				}
+			}
+		}
+	}()
 
 	return kv
 }
