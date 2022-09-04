@@ -6,6 +6,7 @@ import (
 )
 import "crypto/rand"
 import "math/big"
+import "github.com/google/uuid"
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
@@ -40,17 +41,27 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 //
 func (ck *Clerk) Get(key string) string {
 	i := 0
+	id := uuid.New().String()
 	for {
-		args := GetArgs{key}
+		args := GetArgs{key, id}
 		reply := GetReply{}
 
-		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
-		if ok {
-			if reply.Err == OK {
-				return reply.Value
-			} else if reply.Err == ErrNoKey {
-				return ""
+		okCh := make(chan bool)
+		go func() {
+			okCh <- ck.servers[i].Call("KVServer.Get", &args, &reply)
+		}()
+
+		select {
+		case ok := <-okCh:
+			if ok {
+				if reply.Err == OK {
+					return reply.Value
+				} else if reply.Err == ErrNoKey {
+					return ""
+				}
 			}
+		case <-time.After(100 * time.Millisecond):
+
 		}
 
 		i = (i + 1) % len(ck.servers)
@@ -70,15 +81,24 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	i := 0
+	id := uuid.New().String()
 	for {
-		args := PutAppendArgs{key, value, Operation(op)}
+		args := PutAppendArgs{key, value, Operation(op), id}
 		reply := PutAppendReply{}
 
-		ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-		if ok {
-			if reply.Err == OK {
-				return
+		okCh := make(chan bool)
+		go func() {
+			okCh <- ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
+		}()
+
+		select {
+		case ok := <-okCh:
+			if ok {
+				if reply.Err == OK {
+					return
+				}
 			}
+		case <-time.After(100 * time.Millisecond):
 		}
 
 		i = (i + 1) % len(ck.servers)

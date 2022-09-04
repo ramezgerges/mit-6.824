@@ -701,7 +701,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					CommandTerm:  rf.Log[currentLastApplied].Term,
 				}
 			}
-
 		}
 	}()
 
