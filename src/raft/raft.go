@@ -58,7 +58,6 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
-	CommandTerm  int
 }
 
 type LogEntry struct {
@@ -698,7 +697,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					CommandValid: true,
 					Command:      rf.Log[currentLastApplied].Command,
 					CommandIndex: rf.Log[currentLastApplied].Index,
-					CommandTerm:  rf.Log[currentLastApplied].Term,
 				}
 			}
 		}

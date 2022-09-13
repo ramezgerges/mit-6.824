@@ -10,6 +10,8 @@ import "github.com/google/uuid"
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
+	ClerkId string
+	SeqNo   int
 	// You will have to modify this struct.
 }
 
@@ -23,6 +25,8 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.ClerkId = uuid.New().String()
+	ck.SeqNo = 1
 	// You'll have to add code here.
 	return ck
 }
@@ -40,10 +44,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-	i := 0
-	id := uuid.New().String()
-	for {
-		args := GetArgs{key, id}
+	for i := 0; ; i = (i + 1) % len(ck.servers) {
+		args := GetArgs{key, ck.SeqNo, ck.ClerkId}
 		reply := GetReply{}
 
 		okCh := make(chan bool)
@@ -54,6 +56,10 @@ func (ck *Clerk) Get(key string) string {
 		select {
 		case ok := <-okCh:
 			if ok {
+				if reply.Err == OK || reply.Err == ErrNoKey {
+					ck.SeqNo += 1
+				}
+
 				if reply.Err == OK {
 					return reply.Value
 				} else if reply.Err == ErrNoKey {
@@ -61,11 +67,7 @@ func (ck *Clerk) Get(key string) string {
 				}
 			}
 		case <-time.After(100 * time.Millisecond):
-
 		}
-
-		i = (i + 1) % len(ck.servers)
-		time.Sleep(2 * time.Millisecond)
 	}
 }
 
@@ -80,10 +82,8 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	i := 0
-	id := uuid.New().String()
-	for {
-		args := PutAppendArgs{key, value, Operation(op), id}
+	for i := 0; ; i = (i + 1) % len(ck.servers) {
+		args := PutAppendArgs{key, value, Operation(op), ck.SeqNo, ck.ClerkId}
 		reply := PutAppendReply{}
 
 		okCh := make(chan bool)
@@ -95,14 +95,12 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		case ok := <-okCh:
 			if ok {
 				if reply.Err == OK {
+					ck.SeqNo += 1
 					return
 				}
 			}
 		case <-time.After(100 * time.Millisecond):
 		}
-
-		i = (i + 1) % len(ck.servers)
-		time.Sleep(2 * time.Millisecond)
 	}
 }
 

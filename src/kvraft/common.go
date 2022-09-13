@@ -18,6 +18,7 @@ const (
 	ErrNoKey        = "ErrNoKey"
 	ErrWrongLeader  = "ErrWrongLeader"
 	ErrNotCommitted = "NotCommitted"
+	ErrTimeout      = "Timeout"
 )
 
 type Err string
@@ -32,10 +33,11 @@ type Operation string
 
 // Put or Append
 type PutAppendArgs struct {
-	Key   string
-	Value string
-	Op    Operation // "Put" or "Append"
-	Id    string
+	Key     string
+	Value   string
+	Op      Operation // "Put" or "Append"
+	SeqNo   int
+	ClerkId string
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
@@ -46,8 +48,9 @@ type PutAppendReply struct {
 }
 
 type GetArgs struct {
-	Key string
-	Id  string
+	Key     string
+	SeqNo   int
+	ClerkId string
 	// You'll have to add definitions here.
 }
 

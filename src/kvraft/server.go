@@ -13,11 +13,12 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Key    string
-	Value  string
-	Op     Operation // "Put" or "Append"
-	Server int
-	Id     string
+	Key     string
+	Value   string
+	Op      Operation // "Put" or "Append"
+	Server  int
+	ClerkId string
+	SeqNo   int
 }
 
 type KVServer struct {
@@ -30,53 +31,56 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	store      map[string]string
-	storeLock  sync.Mutex
-	chMap      map[int]string
-	chMapLock  sync.Mutex
-	appliedIds map[string]bool
+	store              map[string]string
+	storeLock          sync.Mutex
+	seqMap             map[string]int
+	seqMapLock         sync.Mutex
+	lastIndexCommitted int32
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	defer DPrintf("kvserver[%+v]: Finished KVServer.Get, args=%+v, reply=%+v", kv.me, args, reply)
 
 	index, term, success := kv.rf.Start(Op{
-		Key:    args.Key,
-		Value:  "",
-		Op:     GET,
-		Server: kv.me,
-		Id:     args.Id,
+		Key:     args.Key,
+		Value:   "",
+		Op:      GET,
+		Server:  kv.me,
+		ClerkId: args.ClerkId,
+		SeqNo:   args.SeqNo,
 	})
 
 	DPrintf("kvserver[%+v]: Started KVServer.Get, index=%+v, term=%+v, success=%+v, args=%+v", kv.me, index, term, success, args)
 
-	if success {
-		for {
-			time.Sleep(10 * time.Millisecond)
-
-			kv.chMapLock.Lock()
-			val, ok := kv.chMap[index]
-			kv.chMapLock.Unlock()
-			if ok {
-				if val == args.Id {
-					kv.storeLock.Lock()
-					reply.Value, ok = kv.store[args.Key]
-					kv.storeLock.Unlock()
-
-					if ok {
-						reply.Err = OK
-					} else {
-						reply.Err = ErrNoKey
-					}
-				} else {
-					reply.Err = ErrNotCommitted
-				}
-
-				break
-			}
-		}
-	} else {
+	if !success {
 		reply.Err = ErrWrongLeader
+	}
+
+	for {
+		time.Sleep(10 * time.Millisecond)
+
+		lastCommittedIndex := int(atomic.LoadInt32(&(kv.lastIndexCommitted)))
+		if lastCommittedIndex >= index {
+			kv.seqMapLock.Lock()
+			committedSeqNo, ok := kv.seqMap[args.ClerkId]
+			kv.seqMapLock.Unlock()
+
+			if ok && committedSeqNo >= args.SeqNo {
+				kv.storeLock.Lock()
+				reply.Value, ok = kv.store[args.Key]
+				kv.storeLock.Unlock()
+
+				if ok {
+					reply.Err = OK
+				} else {
+					reply.Err = ErrNoKey
+				}
+			} else {
+				reply.Err = ErrNotCommitted
+			}
+
+			break
+		}
 	}
 }
 
@@ -84,34 +88,37 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	defer DPrintf("kvserver[%+v]: Finished KVServer.PutAppend, args=%+v, reply=%+v", kv.me, args, reply)
 
 	index, term, success := kv.rf.Start(Op{
-		Key:    args.Key,
-		Value:  args.Value,
-		Op:     args.Op,
-		Server: kv.me,
-		Id:     args.Id,
+		Key:     args.Key,
+		Value:   args.Value,
+		Op:      args.Op,
+		Server:  kv.me,
+		ClerkId: args.ClerkId,
+		SeqNo:   args.SeqNo,
 	})
 
 	DPrintf("kvserver[%+v]: Started KVServer.PutAppend, index=%+v, term=%+v, success=%+v, args=%+v", kv.me, index, term, success, args)
 
-	if success {
-		for {
-			time.Sleep(10 * time.Millisecond)
-
-			kv.chMapLock.Lock()
-			val, ok := kv.chMap[index]
-			kv.chMapLock.Unlock()
-			if ok {
-				if val == args.Id {
-					reply.Err = OK
-				} else {
-					reply.Err = ErrNotCommitted
-				}
-
-				break
-			}
-		}
-	} else {
+	if !success {
 		reply.Err = ErrWrongLeader
+	}
+
+	for {
+		time.Sleep(10 * time.Millisecond)
+
+		lastCommittedIndex := int(atomic.LoadInt32(&(kv.lastIndexCommitted)))
+		if lastCommittedIndex >= index {
+			kv.seqMapLock.Lock()
+			committedSeqNo, ok := kv.seqMap[args.ClerkId]
+			kv.seqMapLock.Unlock()
+
+			if ok && committedSeqNo >= args.SeqNo {
+				reply.Err = OK
+			} else {
+				reply.Err = ErrNotCommitted
+			}
+
+			break
+		}
 	}
 }
 
@@ -166,23 +173,27 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	kv.store = make(map[string]string)
-	kv.chMap = make(map[int]string)
-	kv.appliedIds = make(map[string]bool)
+	kv.seqMap = make(map[string]int)
+	kv.lastIndexCommitted = 0
 
 	go func() {
 		for msg := range kv.applyCh {
-			DPrintf("kvserver[%+v]: Applied Message Index:%+v,%+v", kv.me, msg.CommandIndex, msg.CommandTerm)
 			if msg.CommandValid {
 				op := (msg.Command).(Op)
 
-				kv.chMapLock.Lock()
-				kv.chMap[msg.CommandIndex] = op.Id
-				kv.chMapLock.Unlock()
+				doOp := false
 
-				_, ok := kv.appliedIds[op.Id]
-				kv.appliedIds[op.Id] = true
+				kv.seqMapLock.Lock()
+				if _, ok := kv.seqMap[op.ClerkId]; !ok {
+					kv.seqMap[op.ClerkId] = 0
+				}
+				if op.SeqNo == kv.seqMap[op.ClerkId]+1 {
+					doOp = true
+					kv.seqMap[op.ClerkId] = op.SeqNo
+				}
+				kv.seqMapLock.Unlock()
 
-				if !ok {
+				if doOp {
 					if op.Op == PUT || op.Op == APPEND {
 						kv.storeLock.Lock()
 						if op.Op == PUT {
@@ -197,6 +208,14 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 						}
 						kv.storeLock.Unlock()
 					}
+
+					DPrintf("kvserver[%+v]: Applied Operation:%+v Index:%+v", kv.me, op, msg.CommandIndex)
+				} else {
+					DPrintf("kvserver[%+v]: Didn't apply duplicate Operation:%+v Index:%+v", kv.me, op, msg.CommandIndex)
+				}
+
+				if msg.CommandIndex > int(atomic.LoadInt32(&(kv.lastIndexCommitted))) {
+					atomic.StoreInt32(&(kv.lastIndexCommitted), int32(msg.CommandIndex))
 				}
 			}
 		}
